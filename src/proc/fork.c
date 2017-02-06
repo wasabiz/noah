@@ -49,7 +49,19 @@ __do_clone_process(unsigned long clone_flags, unsigned long newsp, gaddr_t paren
   vmm_snapshot(&snapshot);
   vmm_destroy();
 
+  pthread_rwlock_wrlock(&proc.vfs_lock);
+  for (uint i = 0; i < proc.nr_fdtab; ++i) {
+    if (proc.fdtab[i] != NULL)
+      file_incref(proc.fdtab[i]);
+  }
   int ret = syswrap(fork());
+  if (ret < 0) {
+    for (uint i = 0; i < proc.nr_fdtab; ++i) {
+      if (proc.fdtab[i] != NULL)
+        file_decref(proc.fdtab[i]);
+    }
+  }
+  pthread_rwlock_unlock(&proc.vfs_lock);
 
   vmm_reentry(&snapshot);
 

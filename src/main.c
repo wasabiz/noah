@@ -22,6 +22,7 @@
 
 #include <mach-o/dyld.h>
 
+struct vkern *vkern;
 
 static bool
 is_syscall(int instlen, uint64_t rip)
@@ -381,21 +382,33 @@ init_vkernel()
   init_idt();
   init_regs();
   init_fpu();
+
+  vkern = shm_malloc(sizeof *vkern);
+  init_vfs();
 }
 
 static void
 init_first_proc(int rootfd)
 {
+  struct rlimit rl;
+  getrlimit(RLIMIT_NOFILE, &rl);
+
   proc = (struct proc) {
     .nr_tasks = 1,
     .lock = PTHREAD_RWLOCK_INITIALIZER,
     .mm = malloc(sizeof(struct mm)),
-    .root = rootfd,
+    .vfs_root = rootfd,
+    .vfs_lock = PTHREAD_RWLOCK_INITIALIZER,
+    .fdtab = calloc(sizeof(struct file *), rl.rlim_cur),
+    .nr_fdtab = rl.rlim_cur,
   };
   INIT_LIST_HEAD(&proc.tasks);
   list_add(&task.tasks, &proc.tasks);
   init_mm(proc.mm);
   init_signal();
+  vfs_expose_darwinfs_fd(0);
+  vfs_expose_darwinfs_fd(1);
+  vfs_expose_darwinfs_fd(2);
 }
 
 void

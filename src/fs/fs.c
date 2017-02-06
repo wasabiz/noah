@@ -64,6 +64,7 @@
 struct file {
   struct file_operations *ops;
   int fd;
+  atomic_uint ref;
 };
 
 struct file_operations {
@@ -254,12 +255,20 @@ darwinfs_fcntl(struct file *file, unsigned int cmd, unsigned long arg)
   int r;
   struct l_flock lflock;
   struct flock dflock;
-  
+
   switch (cmd) {
-  case LINUX_F_DUPFD:
-    return syswrap(fcntl(file->fd, F_DUPFD, arg)); /* FIXME */
-  case LINUX_F_DUPFD_CLOEXEC:
-    return syswrap(fcntl(file->fd, F_DUPFD_CLOEXEC, arg));
+    if (__builtin_unreachable(), 0) {
+    case LINUX_F_DUPFD:
+      r = syswrap(fcntl(file->fd, F_DUPFD, arg));
+    } else {
+    case LINUX_F_DUPFD_CLOEXEC:
+      r = syswrap(fcntl(file->fd, F_DUPFD_CLOEXEC, arg));
+    }
+    if (r < 0) {
+      return r;
+    }
+    vfs_expose_darwinfs_fd(r);
+    return r;
     /* no translation required for fd flags (i.e. CLOEXEC==1 */
   case LINUX_F_GETFD:
     return syswrap(fcntl(file->fd, F_GETFD));
@@ -339,35 +348,40 @@ darwinfs_fstatfs(struct file *file, struct l_statfs *buf)
   return r;
 }
 
-struct file *
+void file_incref(struct file *file) {
+  atomic_fetch_add(&file->ref, 1);
+}
+
+int file_decref(struct file *file) {
+  return atomic_fetch_sub(&file->ref, 1);
+}
+
+static struct file *
 vfs_acquire(int fd)
 {
-  static struct file_operations ops = {
-    darwinfs_readv,
-    darwinfs_writev,
-    darwinfs_close,
-    darwinfs_ioctl,
-    darwinfs_lseek,
-    darwinfs_getdents,
-    darwinfs_fcntl,
-    darwinfs_fsync,
-    darwinfs_fstat,
-    darwinfs_fstatfs,
-    darwinfs_fchown,
-    darwinfs_fchmod,
-  };
-
-  struct file *file;
-  file = malloc(sizeof *file);
-  file->ops = &ops;
-  file->fd = fd;
+  struct file *file = NULL;
+  pthread_rwlock_rdlock(&proc.vfs_lock);
+  if (! (0 <= fd && (unsigned) fd < proc.nr_fdtab)) {
+    goto out;
+  }
+  file = proc.fdtab[fd];
+  if (file != NULL) {
+    file_incref(file);
+  }
+ out:
+  pthread_rwlock_unlock(&proc.vfs_lock);
   return file;
 }
 
-void
+static int
 vfs_release(struct file *file)
 {
-  free(file);
+  int r = 0;
+  if (file_decref(file) == 1) {
+    r = file->ops->close(file);
+    shm_free(file);
+  }
+  return r;
 }
 
 DEFINE_SYSCALL(write, int, fd, gaddr_t, buf_ptr, size_t, size)
@@ -487,15 +501,47 @@ DEFINE_SYSCALL(readv, int, fd, gaddr_t, iov_ptr, int, iovcnt)
 }
 
 int
-do_close(int fd)
+vfs_close(int fd)
 {
-  /* FIXME: free fd slot */
-  struct file *file = vfs_acquire(fd);
-  if (file == NULL)
-    return -LINUX_EBADF;
-  int n = file->ops->close(file);
-  vfs_release(file);
-  return n;
+  struct file *file = NULL;
+  pthread_rwlock_wrlock(&proc.vfs_lock);
+  int ret = 0, do_free = 0;
+  if (! (0 <= fd && (unsigned) fd < proc.nr_fdtab)) {
+    ret = -LINUX_EBADF;
+    goto out;
+  }
+  if ((file = proc.fdtab[fd]) == NULL) {
+    ret = -LINUX_EBADF;
+    goto out;
+  }
+  /* Always do close the fd. The following code exposes the corner case:
+   *
+   *  pipe(fds);
+   *  if (fork() == 0) {
+   *    close(fd[0]);
+   *    close(fd[1]);
+   *  } else {
+   *    read(fd[0]);            // stuck!
+   *  }
+   *
+   */
+  if ((ret = file->ops->close(file)) < 0) {
+    goto out;
+  }
+  proc.fdtab[fd] = NULL;
+  if (file_decref(file) == 1) {
+    do_free = 1;
+  }
+ out:
+  pthread_rwlock_unlock(&proc.vfs_lock);
+  if (do_free) {
+    shm_free(file);
+  }
+  return ret;
+}
+
+int do_close(int fd) {
+  return vfs_close(fd);
 }
 
 DEFINE_SYSCALL(close, int, fd)
@@ -644,7 +690,7 @@ struct fs {
 };
 
 struct fs_operations {
-  int (*openat)(struct fs *fs, struct dir *dir, const char *path, int flags, int mode); /* TODO: return struct file * instaed of file descripter */
+  int (*openat)(struct fs *fs, struct dir *dir, const char *path, int flags, int mode, struct file **);
   int (*symlinkat)(struct fs *fs, const char *target, struct dir *dir, const char *name);
   int (*faccessat)(struct fs *fs, struct dir *dir, const char *path, int mode);
   int (*renameat)(struct fs *fs, struct dir *dir1, const char *from, struct dir *dir2, const char *to);
@@ -660,10 +706,18 @@ struct fs_operations {
 };
 
 int
-darwinfs_openat(struct fs *fs, struct dir *dir, const char *path, int l_flags, int mode)
+darwinfs_openat(struct fs *fs, struct dir *dir, const char *path, int l_flags, int mode, struct file **out)
 {
-  int flags = linux_to_darwin_o_flags(l_flags);
-  return syswrap(openat(dir->fd, path, flags, mode));
+  int r = syswrap(openat(dir->fd, path, linux_to_darwin_o_flags(l_flags), mode));
+  if (r < 0) {
+    return r;
+  }
+  struct file *file = shm_malloc(sizeof(struct file));
+  file->ref = ATOMIC_VAR_INIT(1);
+  file->ops = vkern->darwinfs_ops;
+  file->fd = r;
+  *out = file;
+  return 0;
 }
 
 int
@@ -766,6 +820,26 @@ darwinfs_fchmodat(struct fs *fs, struct dir *dir, const char *path, l_mode_t mod
   return syswrap(fchmodat(dir->fd, path, mode, 0));
 }
 
+void
+init_vfs(void)
+{
+  vkern->darwinfs_ops = shm_malloc(sizeof *vkern->darwinfs_ops);
+  *vkern->darwinfs_ops = (struct file_operations) {
+    darwinfs_readv,
+    darwinfs_writev,
+    darwinfs_close,
+    darwinfs_ioctl,
+    darwinfs_lseek,
+    darwinfs_getdents,
+    darwinfs_fcntl,
+    darwinfs_fsync,
+    darwinfs_fstat,
+    darwinfs_fstatfs,
+    darwinfs_fchown,
+    darwinfs_fchmod,
+  };
+}
+
 #define LOOKUP_NOFOLLOW   0x0001
 #define LOOKUP_DIRECTORY  0x0002
 /* #define LOOKUP_CONTINUE   0x0004 */
@@ -775,7 +849,7 @@ darwinfs_fchmodat(struct fs *fs, struct dir *dir, const char *path, l_mode_t mod
 
 #define LOOP_MAX 20
 
-int
+static int
 __vfs_grab_dir(const struct dir *parent, const char *name, int flags, struct path *path, int loop)
 {
   static struct fs_operations ops = {
@@ -811,12 +885,12 @@ __vfs_grab_dir(const struct dir *parent, const char *name, int flags, struct pat
   /* resolve mountpoints */
   if (*name == '/') {
     if (name[1] == '\0') {
-      dir.fd = proc.root;
+      dir.fd = proc.vfs_root;
       strcpy(path->subpath, ".");
       goto out;
     }
     if (strncmp(name, "/Users", sizeof "/Users" - 1) && strncmp(name, "/Volumes", sizeof "/Volumes" - 1) && strncmp(name, "/dev", sizeof "/dev" - 1) && strncmp(name, "/tmp", sizeof "/tmp" - 1)) {
-      dir.fd = proc.root;
+      dir.fd = proc.vfs_root;
       name++;
     }
   }
@@ -863,7 +937,7 @@ __vfs_grab_dir(const struct dir *parent, const char *name, int flags, struct pat
   return 0;
 }
 
-int
+static int
 vfs_grab_dir(int dirfd, const char *name, int flags, struct path *path)
 {
   struct dir dir;
@@ -880,14 +954,29 @@ vfs_grab_dir(int dirfd, const char *name, int flags, struct path *path)
   return __vfs_grab_dir(&dir, name, flags, path, 0);
 }
 
-void
+static void
 vfs_ungrab_dir(struct path *path)
 {
   free(path->dir);
 }
 
+void
+vfs_expose_darwinfs_fd(int fd)
+{
+  struct file *file = shm_malloc(sizeof(struct file));
+  file->ref = ATOMIC_VAR_INIT(1);
+  file->ops = vkern->darwinfs_ops;
+  file->fd = fd;
+
+  pthread_rwlock_wrlock(&proc.vfs_lock);
+  assert(0 <= fd && (unsigned) fd < proc.nr_fdtab);
+  assert(proc.fdtab[fd] == NULL);
+  proc.fdtab[fd] = file;
+  pthread_rwlock_unlock(&proc.vfs_lock);
+}
+
 int
-do_openat(int dirfd, const char *name, int flags, int mode)
+openat_darwinfs(int dirfd, const char *name, int flags)
 {
   int lkflag = 0;
   if (flags & LINUX_O_NOFOLLOW) {
@@ -902,22 +991,52 @@ do_openat(int dirfd, const char *name, int flags, int mode)
   if (r < 0) {
     return r;
   }
-  r = path.fs->ops->openat(path.fs, path.dir, path.subpath, flags, mode);
+  assert(path.fs->ops->openat == darwinfs_openat);
+  r = syswrap(openat(path.dir->fd, path.subpath, linux_to_darwin_o_flags(flags), 0));
+  if (r < 0) {
+    return r;
+  }
   vfs_ungrab_dir(&path);
+  if (r < 0) {
+    return r;
+  }
   return r;
 }
 
-int
-do_open(const char *path, int l_flags, int mode)
+static int
+vfs_openat(int dirfd, const char *name, int flags, int mode)
 {
-  return do_openat(LINUX_AT_FDCWD, path, l_flags, mode);
+  int lkflag = 0;
+  if (flags & LINUX_O_NOFOLLOW) {
+    lkflag |= LOOKUP_NOFOLLOW;
+  }
+  if (flags & LINUX_O_DIRECTORY) {
+    lkflag |= LOOKUP_DIRECTORY;
+  }
+
+  struct path path;
+  int r = vfs_grab_dir(dirfd, name, lkflag, &path);
+  if (r < 0) {
+    return r;
+  }
+  struct file *file;
+  r = path.fs->ops->openat(path.fs, path.dir, path.subpath, flags, mode, &file);
+  vfs_ungrab_dir(&path);
+  if (r < 0) {
+    return r;
+  }
+  pthread_rwlock_wrlock(&proc.vfs_lock);
+  assert(proc.fdtab[file->fd] == NULL);
+  proc.fdtab[file->fd] = file;
+  pthread_rwlock_unlock(&proc.vfs_lock);
+  return file->fd;
 }
 
 DEFINE_SYSCALL(openat, int, dirfd, gstr_t, path_ptr, int, flags, int, mode)
 {
   char path[LINUX_PATH_MAX];
   strncpy_from_user(path, path_ptr, sizeof path);
-  return do_openat(dirfd, path, flags, mode);
+  return vfs_openat(dirfd, path, flags, mode);
 }
 
 DEFINE_SYSCALL(open, gstr_t, path_ptr, int, flags, int, mode)
@@ -1047,9 +1166,12 @@ DEFINE_SYSCALL(statfs, gstr_t, path_ptr, gaddr_t, buf_ptr)
   return r;
 }
 
-int
-do_faccessat(int dirfd, const char *name, int mode)
+DEFINE_SYSCALL(faccessat, int, dirfd, gstr_t, path_ptr, int, mode)
 {
+  char name[LINUX_PATH_MAX];
+  if (strncpy_from_user(name, path_ptr, sizeof name) < 0) {
+    return -LINUX_EFAULT;
+  }
   struct path path;
   int r = vfs_grab_dir(dirfd, name, 0, &path);
   if (r < 0) {
@@ -1058,19 +1180,6 @@ do_faccessat(int dirfd, const char *name, int mode)
   r = path.fs->ops->faccessat(path.fs, path.dir, path.subpath, mode);
   vfs_ungrab_dir(&path);
   return r;
-}
-
-int do_access(const char *path, int mode)
-{
-  return do_faccessat(LINUX_AT_FDCWD, path, mode);
-}
-
-DEFINE_SYSCALL(faccessat, int, dirfd, gstr_t, path_ptr, int, mode)
-{
-  char path[LINUX_PATH_MAX];
-  if (strncpy_from_user(path, path_ptr, sizeof path) < 0)
-    return -LINUX_EFAULT;
-  return do_faccessat(dirfd, path, mode);
 }
 
 DEFINE_SYSCALL(access, gstr_t, path_ptr, int, mode)
@@ -1222,7 +1331,7 @@ DEFINE_SYSCALL(mkdir, gstr_t, path_ptr, int, mode)
   return sys_mkdirat(LINUX_AT_FDCWD, path_ptr, mode);
 }
 
-int
+static int
 vfs_getcwd(char *buf, size_t size)
 {
   errno = 0;
@@ -1233,13 +1342,13 @@ vfs_getcwd(char *buf, size_t size)
   return 0;
 }
 
-int
+static int
 vfs_fchdir(int fd)
 {
   return syswrap(fchdir(fd));
 }
 
-int
+static int
 vfs_umask(int mask)
 {
   return syswrap(umask(mask));
@@ -1278,7 +1387,7 @@ DEFINE_SYSCALL(chdir, gstr_t, path_ptr)
 {
   char path[LINUX_PATH_MAX];
   strncpy_from_user(path, path_ptr, sizeof path);
-  int fd = do_openat(LINUX_AT_FDCWD, path, LINUX_O_DIRECTORY, 0);
+  int fd = vfs_openat(LINUX_AT_FDCWD, path, LINUX_O_DIRECTORY, 0);
   if (fd < 0)
     return fd;
   int r = sys_fchdir(fd);
@@ -1294,19 +1403,6 @@ DEFINE_SYSCALL(umask, int, mask)
 
 /* TODO: functions below are not yet ported to the new vfs archtecture. */
 
-
-DEFINE_SYSCALL(pipe, gaddr_t, fildes_ptr)
-{
-  int fd[2];
-  int r = syswrap(pipe(fd));
-  if (r < 0) {
-    return r;
-  }
-  if (copy_to_user(fildes_ptr, fd, sizeof fd)) {
-    return -LINUX_EFAULT;
-  }
-  return 0;
-}
 
 DEFINE_SYSCALL(pipe2, gaddr_t, fildes_ptr, int, flags)
 {
@@ -1350,6 +1446,9 @@ DEFINE_SYSCALL(pipe2, gaddr_t, fildes_ptr, int, flags)
     return -LINUX_EFAULT;
   }
 
+  vfs_expose_darwinfs_fd(fildes[0]);
+  vfs_expose_darwinfs_fd(fildes[1]);
+
   return 0;
 
 fail_fcntl:
@@ -1358,9 +1457,9 @@ fail_fcntl:
   return (err0 < 0) ? err0 : err1;
 }
 
-DEFINE_SYSCALL(dup2, unsigned int, fd1, unsigned int, fd2)
+DEFINE_SYSCALL(pipe, gaddr_t, fildes_ptr)
 {
-  return syswrap(dup2(fd1, fd2));
+  return sys_pipe2(fildes_ptr, 0);
 }
 
 DEFINE_SYSCALL(dup3, unsigned int, oldfd, unsigned int, newfd, int, flags)
@@ -1374,12 +1473,31 @@ DEFINE_SYSCALL(dup3, unsigned int, oldfd, unsigned int, newfd, int, flags)
 
   // TODO: This implementation does not prevent race condition
   //       Make sure that exec closes fds after robust fd control is implemented (i.e. VFS)
+
+  pthread_rwlock_wrlock(&proc.vfs_lock);
+  int alloc_newfile = proc.fdtab[newfd] == NULL;
   int ret = syswrap(dup2(oldfd, newfd));
+  if (alloc_newfile && ret >= 0) {
+    struct file *file = shm_malloc(sizeof(struct file));
+    file->ref = ATOMIC_VAR_INIT(1);
+    file->ops = vkern->darwinfs_ops;
+    file->fd = newfd;
+    proc.fdtab[newfd] = file;
+  }
+  pthread_rwlock_unlock(&proc.vfs_lock);
   if (ret == 0 && (flags & LINUX_O_CLOEXEC)) {
     ret = syswrap(fcntl(newfd, F_SETFD, FD_CLOEXEC));
   }
-
+  if (ret < 0)
+    return ret;
   return ret;
+}
+
+DEFINE_SYSCALL(dup2, unsigned int, fd1, unsigned int, fd2)
+{
+  if (fd1 == fd2)
+    return fd2;
+  return sys_dup3(fd1, fd2, 0);
 }
 
 DEFINE_SYSCALL(pread64, unsigned int, fd, gstr_t, buf_ptr, size_t, count, off_t, pos)

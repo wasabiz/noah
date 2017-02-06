@@ -33,6 +33,7 @@ DEFINE_SYSCALL(socket, int, family, int, type, int, protocol)
     if (e < 0)
       return e;
   }
+  vfs_expose_darwinfs_fd(fd);
   return fd;
 }
 
@@ -437,6 +438,7 @@ DEFINE_SYSCALL(accept, int, sockfd, gaddr_t, addr_ptr, gaddr_t, addrlen_ptr)
     if (copy_to_user(addrlen_ptr, socklen_ptr, sizeof *socklen_ptr))
       return -LINUX_EFAULT;
   }
+  vfs_expose_darwinfs_fd(ret);
   return ret;
 }
 
@@ -518,5 +520,7 @@ DEFINE_SYSCALL(socketpair, int, family, int, type, int, protocol, gaddr_t, usock
     return r;
   if (copy_to_user(usockvec_ptr, fds, sizeof fds))
     return -LINUX_EFAULT;
+  vfs_expose_darwinfs_fd(fds[0]);
+  vfs_expose_darwinfs_fd(fds[1]);
   return r;
 }
