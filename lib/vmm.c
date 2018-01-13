@@ -398,8 +398,9 @@ void
 vmm_read_vmcs(hv_x86_reg_t field, uint64_t *val)
 {
   if (hv_vmx_vcpu_read_vmcs(vcpu->vcpuid, field, val) != HV_SUCCESS) {
-    fprintf(stderr, "read_vmcs failed\n");
-    abort();
+    /* FIXME! reading SYSENTER_ESP and SYSENTER_EIP fails on macOS High Sierra */
+    //fprintf(stderr, "read_vmcs failed\n");
+    //abort();
   }
 }
 
