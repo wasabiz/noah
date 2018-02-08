@@ -5,7 +5,7 @@
 ```console
 $ mkdir build
 $ cd build
-$ ccmake ..
+$ cmake ..
 $ make && make install
 ```
 
