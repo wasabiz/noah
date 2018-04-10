@@ -277,7 +277,7 @@ darwinfs_ioctl(struct file *file, int cmd, uint64_t val0)
     default:
       return -LINUX_EINVAL;
     }
-    return syswrap(tcflow(fd, sel));
+    return syswrap(ioctl(fd, sel));
   }
   case LINUX_TCFLSH: {
     int sel;
