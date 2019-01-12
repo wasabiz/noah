@@ -128,6 +128,7 @@ struct proc {
     khash_t(pfutex) *pfutex; /* TODO: modify khash and make this field being non-pointer */
   };
   struct fileinfo fileinfo;
+  gaddr_t vsyscall_page;
 };
 
 extern struct proc proc;

@@ -22,6 +22,7 @@
 #include <sys/sysctl.h>
 
 #include <mach-o/dyld.h>
+#include <sys/mman.h>
 
 static int
 get_cpuid_count (unsigned int leaf,
@@ -77,6 +78,84 @@ handle_syscall(void)
     return -1;
   }
   return 0;
+}
+
+#define VSYSCALL_PAGE_ADDR 0xffffffffff600000
+
+static inline bool
+is_vsyscall(gaddr_t gladdr)
+{
+    if (gladdr < VSYSCALL_PAGE_ADDR || gladdr > VSYSCALL_PAGE_ADDR + 0x1000) {
+        //printk("Page Fault is not for vsyscall: %llx\n", gladdr);
+        return false;
+    }
+    return true;
+}
+
+/* vsyscall (and its latter day replacement vDSO) is a way to implement fast
+ * paths for frequently called syscalls like `gettimeofday` and `time` without
+ * generating the overhead of a context switch into the kernel.
+ *
+ * Darwin/XNU has a similar functionality in the form of COMMPAGE:
+ * https://wiki.darlinghq.org/documentation:commpage
+ *
+ * Currently, instead of providing a fast path, we rely on vsyscall emulation
+ * by executing the syscall in the way all syscalls are currently implemented.
+ * This is similar to what the Linux kernel does as well:
+ * https://github.com/torvalds/linux/blob/v4.20/arch/x86/entry/vsyscall/vsyscall_emu_64.S
+ */
+
+static inline bool
+handle_vsyscall(gaddr_t gladdr)
+{
+    if (!is_vsyscall(gladdr))
+        return false;
+
+    // Define a location in the process' address space to execute the syscall
+    if (proc.vsyscall_page == 0) {
+        // raw OP code for `syscall;retq`
+        char data[3] = {0x0f,0x05,0xC3};
+
+        proc.vsyscall_page = do_mmap(0, sizeof(data), PROT_WRITE | PROT_READ,
+                LINUX_PROT_READ | LINUX_PROT_EXEC, LINUX_MAP_ANONYMOUS |
+                LINUX_MAP_PRIVATE, -1, 0);
+
+        printk("allocated %llx for vsyscall_page\n", proc.vsyscall_page);
+
+
+        copy_to_user(proc.vsyscall_page, data, sizeof(data));
+    }
+
+    bool handled = false;
+
+    // These are the hardcoded offsets on x86_64, I see no reason to be more
+    // clever than this here given this is likely to be our only emulation
+    // target
+    switch(gladdr) {
+        case VSYSCALL_PAGE_ADDR:
+            vmm_write_register(HV_X86_RAX, 96 /* gettimeofday */);
+            handled = true;
+            break;
+        case VSYSCALL_PAGE_ADDR + 0x400:
+            vmm_write_register(HV_X86_RAX, 201 /* time */);
+            handled = true;
+            break;
+        case VSYSCALL_PAGE_ADDR + 0x800:
+            vmm_write_register(HV_X86_RAX, 309 /* getcpu */);
+            handled = true;
+            break;
+        default:
+            printk("page fault for vsyscall -- 0x%llx\n", gladdr);
+            break;
+    }
+
+    if (handled) {
+        // set RIP to our vsyscall emulation, where the CPU will end up upon
+        // resumption
+        vmm_write_register(HV_X86_RIP, proc.vsyscall_page);
+    }
+
+    return handled;
 }
 
 int
@@ -243,8 +322,11 @@ main_loop(int return_on_sigret)
         /* FIXME */
         uint64_t gladdr;
         vmm_read_vmcs(VMCS_RO_EXIT_QUALIFIC, &gladdr);
-        printk("page fault: caused by guest linear address 0x%llx\n", gladdr);
-        send_signal(getpid(), LINUX_SIGSEGV);
+        if (!handle_vsyscall(gladdr)) {
+            printk("page fault: caused by guest linear address 0x%llx\n", gladdr);
+            send_signal(getpid(), LINUX_SIGSEGV);
+        }
+        break;
       }
       case X86_VEC_UD: {
         uint64_t instlen, rip;
@@ -535,6 +617,7 @@ init_first_proc(const char *root)
     .nr_tasks = 1,
     .lock = PTHREAD_RWLOCK_INITIALIZER,
     .mm = malloc(sizeof(struct mm)),
+    .vsyscall_page = 0,
   };
   INIT_LIST_HEAD(&proc.tasks);
   list_add(&task.head, &proc.tasks);

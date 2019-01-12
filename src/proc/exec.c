@@ -372,6 +372,7 @@ prepare_newproc(void)
   destroy_mm(proc.mm); // munlock is also done by unmapping mm
   init_mm(proc.mm);
   init_reg_state();
+  proc.vsyscall_page = 0;
   reset_signal_state();
   // TODO: destroy LDT if it is implemented
 
