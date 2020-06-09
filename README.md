@@ -14,6 +14,7 @@ macOS Sierra or higher is required.
 ### Homebrew
 
 ```console
+$ brew tap linux-noah/noah
 $ brew install linux-noah/noah/noah
 $ noah
 ```
