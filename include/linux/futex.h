@@ -92,4 +92,51 @@ struct linux_robust_list_head {
   l_uintptr_t			pending_list;
 };
 
+#define LINUX_PR_SET_PDEATHSIG                 1
+#define LINUX_PR_GET_PDEATHSIG                 2
+#define LINUX_PR_GET_DUMPABLE                  3
+#define LINUX_PR_SET_DUMPABLE                  4
+#define LINUX_PR_GET_UNALIGN                   5
+#define LINUX_PR_SET_UNALIGN                   6
+#define LINUX_PR_GET_KEEPCAPS                  7
+#define LINUX_PR_SET_KEEPCAPS                  8
+#define LINUX_PR_GET_FPEMU                     9
+#define LINUX_PR_SET_FPEMU                    10
+#define LINUX_PR_GET_FPEXC                    11
+#define LINUX_PR_SET_FPEXC                    12
+#define LINUX_PR_GET_TIMING                   13
+#define LINUX_PR_SET_TIMING                   14
+#define LINUX_PR_SET_NAME                     15
+#define LINUX_PR_GET_NAME                     16
+
+#define LINIX_PR_GET_ENDIAN                   19
+#define LINIX_PR_SET_ENDIAN                   20
+#define LINIX_PR_GET_SECCOMP                  21
+#define LINIX_PR_SET_SECCOMP                  22
+#define LINIX_PR_CAPBSET_READ                 23
+#define LINIX_PR_CAPBSET_DROP                 24
+#define LINIX_PR_GET_TSC                      25
+#define LINIX_PR_SET_TSC                      26
+#define LINIX_PR_GET_SECUREBITS               27
+#define LINIX_PR_SET_SECUREBITS               28
+#define LINIX_PR_SET_TIMERSLACK               29
+#define LINIX_PR_GET_TIMERSLACK               30
+#define LINIX_PR_TASK_PERF_EVENTS_DISABLE     31
+#define LINIX_PR_TASK_PERF_EVENTS_ENABLE      32
+#define LINIX_PR_MCE_KILL                     33
+#define LINIX_PR_MCE_KILL_GET                 34
+#define LINIX_PR_SET_MM                       35
+#define LINIX_PR_SET_CHILD_SUBREAPER          36
+#define LINIX_PR_GET_CHILD_SUBREAPER          37
+#define LINIX_PR_SET_NO_NEW_PRIVS             38
+#define LINIX_PR_GET_NO_NEW_PRIVS             39
+#define LINIX_PR_GET_TID_ADDRESS              40
+#define LINIX_PR_SET_THP_DISABLE              41
+#define LINIX_PR_GET_THP_DISABLE              42
+#define LINIX_PR_MPX_ENABLE_MANAGEMENT        43
+#define LINIX_PR_MPX_DISABLE_MANAGEMENT       44
+#define LINIX_PR_SET_FP_MODE                  45
+#define LINIX_PR_GET_FP_MODE                  46
+#define LINIX_PR_CAP_AMBIENT                  47
+
 #endif	/* !_LINUX_FUTEX_H */

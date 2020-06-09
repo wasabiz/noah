@@ -207,8 +207,8 @@ vmm_snapshot_vcpu(struct vcpu_snapshot *snapshot)
     vmm_read_register(x86_reg_list[i], &snapshot->vcpu_reg[i]);
   }
   /* snapshot vmcs */
-  for (uint64_t i = 0; i < NR_VMCS_FIELD; i++) {
-    vmm_read_vmcs(vmcs_field_list[i], &snapshot->vmcs[i]);
+  for (uint64_t i = 0; i < NR_VMCS_FIELD_MASKED; i++) {
+    vmm_read_vmcs(vmcs_field_masked_list[i], &snapshot->vmcs[i]);
   }
   hv_vcpu_read_fpstate(vcpu->vcpuid, snapshot->fpu_states, sizeof snapshot->fpu_states);
 }
@@ -236,55 +236,8 @@ void
 vmm_restore_vcpu(struct vcpu_snapshot *snapshot)
 {
   /* restore vmcs */
-  static const uint32_t restore_mask[] = {
-    VMCS_VPID,
-    VMCS_HOST_ES,
-    VMCS_HOST_CS,
-    VMCS_HOST_SS,
-    VMCS_HOST_DS,
-    VMCS_HOST_FS,
-    VMCS_HOST_GS,
-    VMCS_HOST_TR,
-    VMCS_HOST_IA32_PAT,
-    VMCS_HOST_IA32_EFER,
-    VMCS_HOST_IA32_PERF_GLOBAL_CTRL,
-    VMCS_GUEST_PHYSICAL_ADDRESS,
-    VMCS_RO_INSTR_ERROR,
-    VMCS_RO_EXIT_REASON,
-    VMCS_RO_VMEXIT_IRQ_INFO,
-    VMCS_RO_VMEXIT_IRQ_ERROR,
-    VMCS_RO_IDT_VECTOR_INFO,
-    VMCS_RO_IDT_VECTOR_ERROR,
-    VMCS_RO_VMEXIT_INSTR_LEN,
-    VMCS_RO_VMX_INSTR_INFO,
-    VMCS_RO_EXIT_QUALIFIC,
-    VMCS_RO_IO_RCX,
-    VMCS_RO_IO_RSI,
-    VMCS_RO_IO_RDI,
-    VMCS_RO_IO_RIP,
-    VMCS_RO_GUEST_LIN_ADDR,
-    VMCS_HOST_CR0,
-    VMCS_HOST_CR3,
-    VMCS_HOST_CR4,
-    VMCS_HOST_FS_BASE,
-    VMCS_HOST_GS_BASE,
-    VMCS_HOST_TR_BASE,
-    VMCS_HOST_GDTR_BASE,
-    VMCS_HOST_IDTR_BASE,
-    VMCS_HOST_IA32_SYSENTER_ESP,
-    VMCS_HOST_IA32_SYSENTER_EIP,
-    VMCS_HOST_RSP,
-    VMCS_HOST_RIP,
-  };
-
-  for (uint64_t i = 0; i < NR_VMCS_FIELD; i++) {
-    for (uint64_t j = 0; j < sizeof restore_mask / sizeof restore_mask[0]; j++) {
-      if (restore_mask[j] == vmcs_field_list[i]) {
-        goto cont;
-      }
-    }
-    vmm_write_vmcs(vmcs_field_list[i], snapshot->vmcs[i]);
-cont: ;
+  for (uint64_t i = 0; i < NR_VMCS_FIELD_MASKED; i++) {
+    vmm_write_vmcs(vmcs_field_masked_list[i], snapshot->vmcs[i]);
   }
 
   /* restore registers */

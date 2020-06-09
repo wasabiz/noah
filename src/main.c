@@ -23,6 +23,25 @@
 
 #include <mach-o/dyld.h>
 
+static int
+get_cpuid_count (unsigned int leaf,
+		 unsigned int subleaf,
+		 unsigned int *eax, unsigned int *ebx,
+		 unsigned int *ecx, unsigned int *edx)
+{
+    __cpuid_count(leaf, subleaf, *eax, *ebx, *ecx, *edx);
+    return 1;
+}
+
+static bool
+is_avx(int instlen, uint64_t rip)
+{
+  uint8_t op;
+  if (copy_from_user(&op, rip, sizeof op))
+    return false;
+  return op == 0xc4 || op == 0xc5;
+}
+
 static bool
 is_syscall(int instlen, uint64_t rip)
 {
@@ -68,6 +87,114 @@ task_run()
     handle_signal();
   }
   return vmm_run();
+}
+
+#define get_bit(integer, n) (int)((integer & ( 1 << n )) >> n)
+
+#define GET_VMCS(val, var) \
+        var = 0;\
+        vmm_read_vmcs(val, &var);
+
+#define GET_MSR(val, var) \
+        var = 0;\
+        vmm_read_msr(val, &var);
+
+static void check_vm_entry()
+{
+        uint64_t tmp;
+        uint64_t controls, pin_based, cpu_based1, cpu_based2;
+        uint64_t cr0, cr4;
+        uint8_t unrestricted_guest, load_debug_controls, ia_32e_mode_guest,
+                ia_32_perf_global_ctrl, ia_32_pat, ia_32_efer, ia_32_bndcfgs;
+
+
+        GET_VMCS(VMCS_CTRL_VMENTRY_CONTROLS, controls);
+        GET_VMCS(VMCS_CTRL_PIN_BASED, pin_based);
+        GET_VMCS(VMCS_CTRL_CPU_BASED, cpu_based1);
+        GET_VMCS(VMCS_CTRL_CPU_BASED2, cpu_based2);
+
+        unrestricted_guest      = get_bit(cpu_based2, 7);
+        load_debug_controls     = get_bit(controls, 2);
+        ia_32e_mode_guest       = get_bit(controls, 9);
+        ia_32_perf_global_ctrl  = get_bit(controls, 13);
+        ia_32_pat               = get_bit(controls, 14);
+        ia_32_efer              = get_bit(controls, 15);
+        ia_32_bndcfgs           = get_bit(controls, 16);
+
+        GET_VMCS(VMCS_GUEST_CR0, cr0);
+        GET_VMCS(VMCS_GUEST_CR4, cr4);
+
+        if (!unrestricted_guest) {
+                assert(!get_bit(cr0, 31) || get_bit(cr0, 0));
+        }
+
+        if (load_debug_controls) {
+                GET_VMCS(VMCS_GUEST_IA32_DEBUGCTL, tmp);
+                vmm_write_vmcs(VMCS_GUEST_IA32_DEBUGCTL, tmp & 0b1101111111000011);
+                GET_VMCS(VMCS_GUEST_IA32_DEBUGCTL, tmp);
+                assert(!get_bit(tmp, 2)
+                    && !get_bit(tmp, 3)
+                    && !get_bit(tmp, 4)
+                    && !get_bit(tmp, 5)
+                    && !get_bit(tmp, 13)
+                    && tmp < 65535);
+        }
+
+        if (ia_32e_mode_guest) {
+                assert(get_bit(cr0, 31) && get_bit(cr4, 5));
+        } else {
+                assert(!get_bit(cr4, 17));
+        }
+
+        GET_VMCS(VMCS_GUEST_CR3, tmp);
+        assert(!tmp); // CR3 field must be such that bits 63:52 and
+                      // bits in the range 51:32 beyond the
+                      // processor's physical address width are 0
+
+        if (load_debug_controls) {
+                GET_VMCS(VMCS_GUEST_DR7, tmp);
+                assert(tmp < 0b100000000000000000000000000000000);
+        }
+
+        warnk("Didn't check IA32_SYSENTER_ESP canonical\n");
+        warnk("Didn't check IA32_SYSENTER_EIP canonical\n");
+
+
+        if (ia_32_perf_global_ctrl) {
+                warnk("IA_32_PERF_GLOBAL_CTRL not tested\n");
+                GET_VMCS(VMCS_GUEST_IA32_PERF_GLOBAL_CTRL, tmp);
+                assert(!tmp); // Too few bits not reserved
+        }
+
+        if (ia_32_pat) {
+                warnk("IA_32_PAT not tested\n");
+                GET_VMCS(VMCS_GUEST_IA32_PAT, tmp);
+                for (int i = 0; i < 8; ++i) {
+                        char tmpbyte = tmp & 0xff;
+                        assert(tmpbyte == 0
+                                        || tmpbyte == 1
+                                        || tmpbyte == 4
+                                        || tmpbyte == 5
+                                        || tmpbyte == 6
+                                        || tmpbyte == 7);
+                        tmp >>= 8;
+
+                }
+        }
+
+        if (ia_32_efer) {
+                GET_VMCS(VMCS_GUEST_IA32_EFER, tmp);
+                assert(!tmp); // Too few bits not reserved
+                assert(get_bit(tmp, 10) == ia_32e_mode_guest);
+                assert(!get_bit(cr0, 31) || (get_bit(tmp, 10) == get_bit(tmp, 8)));
+        }
+
+        if (ia_32_bndcfgs) {
+                 warnk("Didn't check IA32_BNDCFGS\n");
+        }
+
+        printk("EVERYTHING CLEAR SO FAR\n");
+
 }
 
 void
@@ -131,7 +258,18 @@ main_loop(int return_on_sigret)
             return;
           }
           continue;
-        }
+        } else if (is_avx(instlen, rip)) {
+	  uint64_t xcr0;
+	  vmm_read_register(HV_X86_XCR0, &xcr0);
+	  if ((xcr0 & XCR0_AVX_STATE) == 0) {
+	    unsigned int eax, ebx, ecx, edx;
+	    get_cpuid_count(0x0d, 0x0, &eax, &ebx, &ecx, &edx);
+	    if (eax & XCR0_AVX_STATE) {
+	      vmm_write_register(HV_X86_XCR0, xcr0 | XCR0_AVX_STATE);
+	      continue;
+	    }
+	  }
+	}
         /* FIXME */
         warnk("invalid opcode! (rip = %p): ", (void *) rip);
         unsigned char inst[instlen];
@@ -239,7 +377,22 @@ main_loop(int return_on_sigret)
     }
 
     default:
-      printk("other reason: %llu\n", exit_reason);
+    // See: Intel® 64 and IA-32 Architectures Software Developer’s Manual
+    // Volume 3B: System Programming Guide, Part 2
+    // Order Number: 253669-033US
+    // December 2009
+    // Section 21.9 VM-EXIT INFORMATION FIELDS
+    // 21.9.1 Basic VM-Exit information
+    // Exit reason
+      if (exit_reason & (1<<31)) {
+        exit_reason ^= (1<<31);
+        printk("VM-entry failure exit reason: %llx\n", exit_reason);
+      } else
+        printk("other exit reason: %llx\n", exit_reason);
+      if (exit_reason & VMX_REASON_VMENTRY_GUEST)
+        check_vm_entry();
+      vmm_read_vmcs(VMCS_RO_EXIT_QUALIFIC, &qual);
+      printk("exit qualification: %llx\n", qual);
     }
   }
 
@@ -310,6 +463,13 @@ init_regs()
 {
   /* set up cpu regs */
   vmm_write_register(HV_X86_RFLAGS, 0x2);
+  unsigned int eax, ebx, ecx, edx;
+  get_cpuid_count(0x0d, 0x0, &eax, &ebx, &ecx, &edx);
+  if (eax & XCR0_SSE_STATE) {
+    uint64_t xcr0;
+    vmm_read_register(HV_X86_XCR0, &xcr0);
+    vmm_write_register(HV_X86_XCR0, xcr0 | XCR0_SSE_STATE);
+  }
 }
 
 void
@@ -488,10 +648,11 @@ main(int argc, char *argv[], char **envp)
     { "strace", required_argument, NULL, 's'},
     { "warning", required_argument, NULL, 'w'},
     { "mnt", required_argument, NULL, 'm' },
+    { "help", no_argument, NULL, 'h' },
     { 0, 0, 0, 0 }
   };
 
-  while ((c = getopt_long(argc, argv, "+o:w:s:m:", long_options, NULL)) != -1) {
+  while ((c = getopt_long(argc, argv, "+ho:w:s:m:", long_options, NULL)) != -1) {
     switch (c) {
     case 'o':
       strncpy(debug_paths[PRINTK_PATH], optarg, PATH_MAX);
@@ -509,6 +670,10 @@ main(int argc, char *argv[], char **envp)
       }
       argv[optind - 1] = root;
       break;
+    case 'h':
+    default:
+      printf("Usage: noah -h | [-o output] [-w warning] [-s strace] -m /virtual/filesystem/root executable ...\n");
+      exit(0);
     }
   }
 

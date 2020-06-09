@@ -50,6 +50,11 @@ struct l_timezone {
 
 typedef uint32_t l_clockid_t;
 
+struct l_itimerval {
+  struct l_timeval it_interval;
+  struct l_timeval it_value;
+};
+
 #define LINUX_CLOCK_REALTIME             0
 #define LINUX_CLOCK_MONOTONIC            1
 #define LINUX_CLOCK_PROCESS_CPUTIME_ID   2

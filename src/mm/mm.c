@@ -282,7 +282,7 @@ DEFINE_SYSCALL(munlock, gaddr_t, addr, size_t, length)
 DEFINE_SYSCALL(brk, unsigned long, brk)
 {
   uint64_t ret;
-  brk = roundup(brk, PAGE_SIZE(PAGE_4KB));
+  brk = roundup(brk, PAGE_SIZEOF(PAGE_4KB));
 
   pthread_rwlock_wrlock(&proc.mm->alloc_lock);
   if (brk < proc.mm->start_brk) {
@@ -326,7 +326,7 @@ DEFINE_SYSCALL(get_mempolicy, gaddr_t, policy, gaddr_t, nmask, unsigned long, ma
 DEFINE_SYSCALL(msync, gaddr_t, addr, size_t, len, int, flags)
 {
   struct mm_region *region = find_region(addr, proc.mm);
-  if (!region || addr - region->gaddr >= len || len + addr - region->gaddr >= region->size) {
+  if (!region || addr - region->gaddr >= len || len + addr - region->gaddr > region->size) {
     return -LINUX_ENOMEM;
   }
   

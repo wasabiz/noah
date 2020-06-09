@@ -80,6 +80,8 @@ struct l___sysctl_args
 
 #define	LINUX_RLIM_NLIMITS	10
 
+#define	LINUX_RLIM_INFINITY	(~0UL)
+
 struct l_rlimit {
   l_ulong		rlim_cur;
   l_ulong		rlim_max;

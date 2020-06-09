@@ -18,6 +18,15 @@ $ INSTALL_PREFIX/libexec/noah -m ROOT_PATH PATH_TO_INIT
 ```
 where `ROOT_PATH` is a path to the directory that is treated as the root mount point in the Linux box, and `PATH_TO_INIT` is a path to the first command to be run in the boot sequence, like `/bin/bash`.
 
+`noahstrap` helps you set up a Linux environment on your local machine.
+It retrieves a ready-to-use distro image from the Internet and extracts it to a specified directory.
+`noahstrap` is installed via homebrew.
+
+```console
+$ brew install linux-noah/noah/noahstrap
+$ noahstrap --help  # prints help message
+```
+
 ## Debugging
 
 There are several methods to debug `noah`.

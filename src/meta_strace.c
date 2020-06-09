@@ -29,7 +29,7 @@ print_gstr(gstr_t str, int maxlen)
 {
   fprintf(strace_sink, "\"");
   for (int i = 0; i < maxlen; i++) {
-    char c = *((char*)guest_to_host(str) + i);
+    char c = *((char*)guest_to_host(str + i));
     if (c == '\0') {
       break;
     } else if (c == '\n') {

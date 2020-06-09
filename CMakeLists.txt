@@ -1,13 +1,19 @@
 cmake_minimum_required(VERSION 3.7)
 
-project(noah VERSION 0.3.9)
+project(noah VERSION 0.5.1)
 
 configure_file(bin/noah.in ${PROJECT_SOURCE_DIR}/bin/noah @ONLY)
 configure_file(include/version.h.in ${PROJECT_SOURCE_DIR}/include/version.h)
 
+if (CMAKE_HOST_SYSTEM_VERSION VERSION_LESS 16.0.0)
+add_definitions("-DMACOS_PRE_16")
+endif()
+
+find_library(HYPERVISOR_FRAMEWORK Hypervisor)
+find_library(PTHREAD_LIBRARY pthread)
+
 set(CMAKE_C_FLAGS "-Wall -Wextra -Wno-unused-parameter -std=gnu11")
 set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -O0 -g -fsanitize=address -fno-omit-frame-pointer")
-set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O2")
 include_directories(include)
 
 add_executable(noah
@@ -33,10 +39,11 @@ add_executable(noah
   src/mm/shm.c
   src/ipc/sem.c
   )
-target_link_libraries(noah pthread "-framework Hypervisor")
+target_link_libraries(noah ${PTHREAD_LIBRARY} ${HYPERVISOR_FRAMEWORK})
 
 install(PROGRAMS bin/noah DESTINATION bin)
 install(TARGETS noah DESTINATION libexec)
+install(FILES man/noah.1 DESTINATION ${CMAKE_INSTALL_PREFIX}/man/man1)
 
 enable_testing()
 add_subdirectory(test)

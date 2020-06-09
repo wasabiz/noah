@@ -620,8 +620,8 @@ darwin_to_linux_rlimit(int resource, struct rlimit *darwin_rlimit, struct l_rlim
       break;
     default:
       *linux_rlimit = (struct l_rlimit) {
-        .rlim_cur = darwin_rlimit->rlim_cur,
-        .rlim_max = darwin_rlimit->rlim_max
+        .rlim_cur = darwin_rlimit->rlim_cur == RLIM_INFINITY ? LINUX_RLIM_INFINITY : darwin_rlimit->rlim_cur,
+        .rlim_max = darwin_rlimit->rlim_max == RLIM_INFINITY ? LINUX_RLIM_INFINITY : darwin_rlimit->rlim_max
       };
   }
 }

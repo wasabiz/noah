@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <mach/vm_statistics.h>
 #include <pthread.h>
 
 #include <Hypervisor/hv.h>
@@ -28,7 +29,7 @@ init_mmap(struct mm *mm)
 gaddr_t
 alloc_region(size_t len)
 {
-  len = roundup(len, PAGE_SIZE(PAGE_4KB));
+  len = roundup(len, PAGE_SIZEOF(PAGE_4KB));
   proc.mm->current_mmap_top += len;
   return proc.mm->current_mmap_top - len;
 }
@@ -39,7 +40,7 @@ do_munmap(gaddr_t gaddr, size_t size)
   if (!is_page_aligned((void*)gaddr, PAGE_4KB)) {
     return -LINUX_EINVAL;
   }
-  size = roundup(size, PAGE_SIZE(PAGE_4KB)); // Linux kernel also does this
+  size = roundup(size, PAGE_SIZEOF(PAGE_4KB)); // Linux kernel also does this
 
   struct mm_region *overlapping = find_region_range(gaddr, size, proc.mm);
   if (overlapping == NULL) {
@@ -76,6 +77,7 @@ linux_to_darwin_mflags(int l_flags)
   if (l_flags & LINUX_MAP_SHARED) d_flags |= MAP_SHARED;
   if (l_flags & LINUX_MAP_PRIVATE) d_flags |= MAP_PRIVATE;
   if (l_flags & LINUX_MAP_ANON) d_flags |= MAP_ANON;
+  if (l_flags & LINUX_MAP_HUGETLB) d_flags |= VM_FLAGS_SUPERPAGE_SIZE_ANY;
   return d_flags;
 }
 
@@ -94,9 +96,9 @@ do_mmap(gaddr_t addr, size_t len, int d_prot, int l_prot, int l_flags, int fd, o
   /* the linux kernel does nothing for LINUX_MAP_STACK */
   l_flags &= ~LINUX_MAP_STACK;
 
-  len = roundup(len, PAGE_SIZE(PAGE_4KB));
+  len = roundup(len, PAGE_SIZEOF(PAGE_4KB));
 
-  if ((l_flags & ~(LINUX_MAP_SHARED | LINUX_MAP_PRIVATE | LINUX_MAP_FIXED | LINUX_MAP_ANON)) != 0) {
+  if ((l_flags & ~(LINUX_MAP_SHARED | LINUX_MAP_PRIVATE | LINUX_MAP_FIXED | LINUX_MAP_ANON | LINUX_MAP_HUGETLB)) != 0) {
     warnk("unsupported mmap l_flags: 0x%x\n", l_flags);
     exit(1);
   }
@@ -110,7 +112,7 @@ do_mmap(gaddr_t addr, size_t len, int d_prot, int l_prot, int l_flags, int fd, o
 
   void *ptr = mmap(0, len, d_prot, linux_to_darwin_mflags(l_flags), fd, offset);
   if (ptr == MAP_FAILED) {
-    panic("mmap failed. addr :0x%llx, len: 0x%lux, prot: %d, l_flags: %d, fd: %d, offset: 0x%llx\n", addr, len, l_prot, l_flags, fd, offset);
+    return -darwin_to_linux_errno(errno);
   }
 
   do_munmap(addr, len);
@@ -148,8 +150,8 @@ DEFINE_SYSCALL(mremap, gaddr_t, old_addr, size_t, old_size, size_t, new_size, in
     return -LINUX_EINVAL;
 
   /* Linux kernel also does these aligning */
-  old_size = roundup(old_size, PAGE_SIZE(PAGE_4KB));
-  new_size = roundup(new_size, PAGE_SIZE(PAGE_4KB));
+  old_size = roundup(old_size, PAGE_SIZEOF(PAGE_4KB));
+  new_size = roundup(new_size, PAGE_SIZEOF(PAGE_4KB));
 
   gaddr_t ret = old_addr;
 
@@ -221,7 +223,7 @@ DEFINE_SYSCALL(mprotect, gaddr_t, addr, size_t, len, int, prot)
   }
   // TODO check if user is permiited to access the addr
 
-  len = roundup(len, PAGE_SIZE(PAGE_4KB));
+  len = roundup(len, PAGE_SIZEOF(PAGE_4KB));
   gaddr_t end = addr + len;
 
   hv_memory_flags_t hvprot = 0;

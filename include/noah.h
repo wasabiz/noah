@@ -81,7 +81,7 @@ struct task {
 struct fdtable {
   int start; // First fd number of this table
   int size;  // Current table size expressed in number of bits
-  struct file *files;
+  struct file **files;
   uint64_t *open_fds;
   uint64_t *cloexec_fds;
 };

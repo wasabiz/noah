@@ -1,0 +1,52 @@
+.TH "NOAH" "1" "May 2018" "" ""
+.SH "NAME"
+\fBnoah\fR - Linux ABI implementation (aka Execution Flavour) for OSX
+.SH "SYNOPSIS"
+.P
+\fBnoah\fR \fB-h\fR | \fB\fI-o output_file\fR\fR \[lB]\fI-w warning_file\fR\[rB] \[lB]\fI-s strace_file\fR\[rB] \fB-m /virtual/filesystem/root\fR \fBprogram\fR \[lB]\fI...\fR\[rB]
+.SH "DESCRIPTION"
+.P
+Noah implements Linux Application Binary Interface (ABI) for OSX through its Hypervisor Framework based on Intel(R) VTX technology.
+.P
+For convenience, a wrapper script written in PERL is provided for launching, as well as debugging the tool (it has to be edited manually). It is that script that is normally executed from path, providing \fI~/.noah/tree\fR as the virtual root.
+.P
+On the first invocation the script uses noahstrap(1) to populate this virtual root with a default Ubuntu suite, see noahstrap-suites(1).
+.SS "Options"
+.P
+ \fI-h\fR, \fI--help\fR output a short help message.
+.P
+ \fI-w file\fR, \fI--warning file\fR optional, specifies the warning capture file. 
+.P
+ \fI-o file\fR, \fI--output file\fR optional, specifies the output capture file.
+.P
+ \fI-s file\fR, \fI--strace file\fR optional, specifies the strace capture file.
+.P
+ \fI-m /virtual/filesystem/root\fR, \fI--mnt /virtual/filesystem/root\fR mandatory, specifies the virtual filesystem root where the target application, as well as the ELF interpreter and the rest of dynamic libraries reside.
+.P
+ \fIprogram\fR the target program within the virtual FS root.
+.SH "FILES"
+.P
+ \fI~/.noah/tree\fR
+.P
+.RS 2
+.nf
+Default virtual filesystem root.
+.fi
+.RE
+.SH "REFERENCES:"
+.RS 0
+.IP \(bu 4
+\fBxhyve\fR \fI\(lahttps://github.com/mist64/xhyve\(ra\fR
+.IP \(bu 4
+\fBLinux Darling project\fR \fI\(lahttp://www.darlinghq.org/source-code/\(ra\fR
+.IP \(bu 4
+\fBFreeBSD Linuxolator aka Linux ABI\fR \fI\(lahttps://www.freebsd.org/doc/handbook/linuxemu-advanced.html\(ra\fR
+.IP \(bu 4
+\fBBash on Ubuntu on macOS\fR \fI\(lahttps://hagi.is.s.u-tokyo.ac.jp/~yuichi/papers/apsys2017.pdf\(ra\fR
+.IP \(bu 4
+\fBNoah Hypervisor-Based Darwin Subsystem for Linux\fR \fI\(lahttp://events17.linuxfoundation.org/sites/events/files/slides/Noah%20Hypervisor-Based%20Darwin%20Subsystem%20for%20Linux-pdf.pdf\(ra\fR
+.RE 0
+
+.SH "SEE ALSO:"
+.P
+noahstrap(1), noahstrap-suites(1)

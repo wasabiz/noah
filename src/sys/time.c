@@ -14,12 +14,41 @@
 #include <ctype.h>
 
 #include <utime.h>
-#include <time.h>
 #include <sys/time.h>
 #include <sys/attr.h>
 #include <sys/stat.h>
 #include <mach/clock.h>
 #include <mach/mach.h>
+
+#if defined(MACOS_PRE_16)
+#include <mach/mach_time.h>
+#define TIMER_ABSTIME -1
+#define CLOCK_REALTIME CALENDAR_CLOCK
+#define CLOCK_MONOTONIC SYSTEM_CLOCK
+#define CLOCK_PROCESS_CPUTIME_ID       2
+#define CLOCK_THREAD_CPUTIME_ID        3
+
+typedef int clockid_t;
+
+int clock_gettime(clockid_t clk_id, struct timespec *t){
+    mach_timebase_info_data_t timebase;
+    mach_timebase_info(&timebase);
+    uint64_t time;
+    time = mach_absolute_time();
+    double nseconds = ((double)time * (double)timebase.numer)/((double)timebase.denom);
+    double seconds = ((double)time * (double)timebase.numer)/((double)timebase.denom * 1e9);
+    t->tv_sec = seconds;
+    t->tv_nsec = nseconds;
+    return 0;
+}
+
+int clock_getres(clockid_t clk_id, struct timespec *t){
+    return 0;
+}
+#else
+#include <time.h>
+#endif
+
 
 DEFINE_SYSCALL(time, gaddr_t, tloc_ptr)
 {
@@ -225,3 +254,60 @@ DEFINE_SYSCALL(fdatasync, int, fildes)
 {
   return syswrap(fsync(fildes));
 }
+
+void
+darwin_to_linux_itimerval(const struct itimerval* d_val, struct l_itimerval* l_val) {
+  l_val->it_interval.tv_sec  = d_val->it_interval.tv_sec;
+  l_val->it_interval.tv_usec = d_val->it_interval.tv_usec;
+  l_val->it_value.tv_sec     = d_val->it_value.tv_sec;
+  l_val->it_value.tv_usec    = d_val->it_value.tv_usec;
+}
+
+void
+linux_to_darwin_itimerval(const struct l_itimerval* l_val, struct itimerval* d_val) {
+  d_val->it_interval.tv_sec  = l_val->it_interval.tv_sec;
+  d_val->it_interval.tv_usec = l_val->it_interval.tv_usec;
+  d_val->it_value.tv_sec     = l_val->it_value.tv_sec;
+  d_val->it_value.tv_usec    = l_val->it_value.tv_usec;
+}
+
+DEFINE_SYSCALL(getitimer, int, which, gaddr_t, ret_ptr) {
+  struct itimerval value;
+  // Darwin's which is compatible with that of Linux
+  int r = syswrap(getitimer(which, &value));
+  if (r < 0) {
+    return r;
+  }
+  struct l_itimerval l_itimerval;
+  darwin_to_linux_itimerval(&value, &l_itimerval);
+  if (copy_to_user(ret_ptr, &l_itimerval, sizeof l_itimerval)) {
+    return -LINUX_EFAULT;
+  }
+  return r;
+}
+
+
+DEFINE_SYSCALL(setitimer, int, which, gaddr_t, new_ptr, gaddr_t, old_ptr) {
+  struct l_itimerval l_newvalue, l_oldvalue;
+  struct itimerval newvalue, oldvalue;
+  if (new_ptr == 0) {
+    return sys_getitimer(which, old_ptr);
+  }
+  if (copy_from_user(&l_newvalue, new_ptr, sizeof l_newvalue)) {
+    return -LINUX_EFAULT;
+  }
+  linux_to_darwin_itimerval(&l_newvalue, &newvalue);
+  // Darwin's which is compatible with that of Linux
+  int r = syswrap(setitimer(which, &newvalue, &oldvalue));
+  if (r < 0) {
+    return r;
+  }
+  if (old_ptr != 0) {
+    darwin_to_linux_itimerval(&oldvalue, &l_oldvalue);
+    if (copy_to_user(old_ptr, &l_oldvalue, sizeof l_oldvalue)) {
+      return -LINUX_EFAULT;
+    }
+  }
+  return r;
+}
+

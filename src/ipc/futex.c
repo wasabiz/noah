@@ -117,6 +117,11 @@ do_private_futex(gaddr_t uaddr, int op, uint32_t val, gaddr_t timeout_ptr, gaddr
     return do_private_futex_wake(uaddr, val, false, 0);
   }
   case LINUX_FUTEX_WAIT: {
+    uint32_t uval;
+    if (copy_from_user(&uval, uaddr, sizeof uval))
+      return -LINUX_EFAULT;
+    if (uval != val)
+      return -EWOULDBLOCK;
     struct timespec ts;
     if (timeout_ptr != 0) {
       struct l_timespec timeout;

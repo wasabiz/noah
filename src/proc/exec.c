@@ -66,10 +66,10 @@ load_elf_interp(const char *path, ulong load_addr)
 
     ulong p_vaddr = p[i].p_vaddr + load_addr;
 
-    ulong mask = PAGE_SIZE(PAGE_4KB) - 1;
+    ulong mask = PAGE_SIZEOF(PAGE_4KB) - 1;
     ulong vaddr = p_vaddr & ~mask;
     ulong offset = p_vaddr & mask;
-    ulong size = roundup(p[i].p_memsz + offset, PAGE_SIZE(PAGE_4KB));
+    ulong size = roundup(p[i].p_memsz + offset, PAGE_SIZEOF(PAGE_4KB));
 
     int prot = 0;
     if (p[i].p_flags & PF_X) prot |= LINUX_PROT_EXEC;
@@ -81,7 +81,7 @@ load_elf_interp(const char *path, ulong load_addr)
 
     copy_to_user(vaddr + offset, data + p[i].p_offset, p[i].p_filesz);
 
-    map_top = MAX(map_top, roundup(vaddr + size, PAGE_SIZE(PAGE_4KB)));
+    map_top = MAX(map_top, roundup(vaddr + size, PAGE_SIZEOF(PAGE_4KB)));
   }
 
   vmm_write_vmcs(VMCS_GUEST_RIP, load_addr + h->e_entry);
@@ -128,10 +128,10 @@ load_elf(Elf64_Ehdr *ehdr, int argc, char *argv[], char **envp)
 
     ulong p_vaddr = p[i].p_vaddr + global_offset;
 
-    ulong mask = PAGE_SIZE(PAGE_4KB) - 1;
+    ulong mask = PAGE_SIZEOF(PAGE_4KB) - 1;
     ulong vaddr = p_vaddr & ~mask;
     ulong offset = p_vaddr & mask;
-    ulong size = roundup(p[i].p_memsz + offset, PAGE_SIZE(PAGE_4KB));
+    ulong size = roundup(p[i].p_memsz + offset, PAGE_SIZEOF(PAGE_4KB));
 
     int prot = 0;
     if (p[i].p_flags & PF_X) prot |= LINUX_PROT_EXEC;
@@ -147,7 +147,7 @@ load_elf(Elf64_Ehdr *ehdr, int argc, char *argv[], char **envp)
       load_base = p[i].p_vaddr - p[i].p_offset + global_offset;
       load_base_set = true;
     }
-    map_top = MAX(map_top, roundup(vaddr + size, PAGE_SIZE(PAGE_4KB)));
+    map_top = MAX(map_top, roundup(vaddr + size, PAGE_SIZEOF(PAGE_4KB)));
   }
 
   assert(load_base_set);
@@ -301,7 +301,7 @@ init_userstack(int argc, char *argv[], char **envp, uint64_t exe_base, const Elf
     { AT_PHDR, exe_base + ehdr->e_phoff },
     { AT_PHENT, ehdr->e_phentsize },
     { AT_PHNUM, ehdr->e_phnum },
-    { AT_PAGESZ, PAGE_SIZE(PAGE_4KB) },
+    { AT_PAGESZ, PAGE_SIZEOF(PAGE_4KB) },
     { AT_RANDOM, rand_ptr },
     { AT_NULL, 0 },
   };
@@ -400,10 +400,14 @@ do_exec(const char *elf_path, int argc, char *argv[], char **envp)
     return -LINUX_EINVAL;
   }
 
-  prepare_newproc();
-
   /* Now do exec */
   fstat(fd, &st);
+  if (!S_ISREG(st.st_mode)) {
+    vkern_close(fd);
+    return -LINUX_EACCES;
+  }
+
+  prepare_newproc();
 
   data = mmap(0, st.st_size, PROT_READ | PROT_EXEC, MAP_PRIVATE, fd, 0);
 

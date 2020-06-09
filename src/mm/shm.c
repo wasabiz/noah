@@ -48,10 +48,10 @@ DEFINE_SYSCALL(shmat, int, shmid, gaddr_t, addr, int, shmflg)
   pthread_rwlock_wrlock(&proc.mm->alloc_lock);
   addr = alloc_region(len);
   do_munmap(addr, len);
-  record_region(proc.mm, ptr, addr, len, LINUX_PROT_READ | LINUX_PROT_WRITE | LINUX_PROT_EXEC, LINUX_MAP_PRIVATE | LINUX_MAP_FIXED, -1, 0);
-  vmm_mmap(addr, len, HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC, ptr);
+  record_region(proc.mm, ptr, addr, len, LINUX_PROT_READ | LINUX_PROT_WRITE, LINUX_MAP_PRIVATE | LINUX_MAP_FIXED, -1, 0);
+  vmm_mmap(addr, len, HV_MEMORY_READ | HV_MEMORY_WRITE, ptr);
   pthread_rwlock_unlock(&proc.mm->alloc_lock);
-  return (uint64_t) ptr;
+  return (uint64_t) addr;
 }
 
 DEFINE_SYSCALL(shmctl, int, shmid, int, cmd, gaddr_t, buf_ptr)

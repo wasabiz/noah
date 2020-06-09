@@ -33,19 +33,36 @@ DEFINE_SYSCALL(sysinfo, gaddr_t, info_ptr)
 
   int64_t memsize;
   len = sizeof memsize;
-  if (sysctlbyname("hw.memsize", &memsize, &len, NULL, 0) < 0) exit(1);
+  if (sysctlbyname("hw.memsize", &memsize, &len, NULL, 0) < 0){
+    perror("sysinfo:");
+    exit(1);
+  }
   info.totalram = memsize;
 
   int64_t freepages;
   len = sizeof freepages;
-  if (sysctlbyname("vm.page_free_count", &freepages, &len, NULL, 0) < 0) exit(1);
+  if (sysctlbyname("vm.page_free_count", &freepages, &len, NULL, 0) < 0){
+    perror("sysinfo:");
+    exit(1);
+  }
   info.freeram = freepages * 0x1000;
 
-  uint64_t swapinfo[3];
+  /*
+   * sysctlbyname() changed in macos 15. Any older os will leave swapinfo[4] as 0.
+   */
+  
+  uint64_t swapinfo[4] = {0};
   len = sizeof swapinfo;
-  if (sysctlbyname("vm.swapusage", &swapinfo, &len, NULL, 0) < 0) exit(1);
+  if (sysctlbyname("vm.swapusage", &swapinfo, &len, NULL, 0) < 0){
+    perror("sysinfo:");
+    exit(1);
+  }
   info.totalswap = swapinfo[0];
-  info.freeswap = swapinfo[2];
+  
+  if(swapinfo[3] == 0)
+    info.freeswap = swapinfo[2];
+  else
+    info.freeswap = swapinfo[1];
 
   /* TODO */
   info.sharedram = 0;

@@ -246,21 +246,36 @@ DEFINE_SYSCALL(shutdown, int, socket, int, how)
   return syswrap(shutdown(socket, how));
 }
 
-DEFINE_SYSCALL(sendto, int, socket, gaddr_t, buf_ptr, int, length, int, flags, gaddr_t, dest_addr, socklen_t, dest_len)
+DEFINE_SYSCALL(sendto, int, socket, gaddr_t, buf_ptr, int, length, int, flags, gaddr_t, addr_ptr, socklen_t, addrlen)
 {
-  warnk("sendto: dest_addr is not used! (dest_addr = 0x%llx, dest_len = %d)\n", dest_addr, dest_len);
-  int r;
+  int ret;
+  struct sockaddr *sockaddr = NULL;
+  struct l_sockaddr l_sockaddr;
+
+  if (addr_ptr != 0) {
+    if (copy_from_user(&l_sockaddr, addr_ptr, addrlen))
+      return -LINUX_EFAULT;
+    if (linux_to_darwin_sockaddr(&sockaddr, &l_sockaddr, addrlen) < 0)
+      return -LINUX_EINVAL;
+  }
   char *buf = malloc(length);
-  
-  if (copy_from_user(buf, buf_ptr, length)) {
-    r = -LINUX_EFAULT;
+  if (buf == NULL) {
+    ret = -LINUX_ENOMEM;
+    goto err;
+  }
+  ret = copy_from_user(buf, buf_ptr, length);
+  if (ret < 0) {
+    ret = -LINUX_EFAULT;
     goto out;
   }
-  r = syswrap(sendto(socket, buf, length, flags, NULL, 0));
-  
-out:
+  ret = syswrap(sendto(socket, buf, length, flags, sockaddr, addrlen));
+
+ out:
   free(buf);
-  return r;
+ err:
+  if (sockaddr)
+    free(sockaddr);
+  return ret;
 }
 
 int
@@ -301,7 +316,7 @@ linux_to_darwin_msg_flags(l_int flags)
   }
 
   if (flags) {
-    warnk("unsupported msg_flags: 0x%x", flags);
+    warnk("unsupported msg_flags: 0x%x\n", flags);
     return -LINUX_EOPNOTSUPP;
   }
 
@@ -324,7 +339,7 @@ DEFINE_SYSCALL(recvfrom, int, socket, gaddr_t, buf_ptr, int, length, int, flags,
   int ret = syswrap(recvfrom(socket, buf, length, flags, sock_ptr, socklen_ptr));
   if (ret < 0)
     return ret;
-  if (copy_to_user(buf_ptr, buf, length))
+  if (copy_to_user(buf_ptr, buf, ret))
     return -LINUX_EFAULT;
   if (addr_ptr != 0) {
     char addr[sock_ptr->sa_len];
@@ -363,18 +378,34 @@ do_sendmsg(int sockfd, const struct l_msghdr *msg, int flags)
     if (copy_from_user(hdr.msg_iov[i].iov_base, liov[i].iov_base, hdr.msg_iov[i].iov_len))
       return -LINUX_EFAULT;
   }
-  hdr.msg_flags = linux_to_darwin_msg_flags(msg->msg_flags);
-  if (hdr.msg_flags < 0) {
-    warnk("do_sendmsg: unsupported flags\n");
-    return hdr.msg_flags;
-  }
+
   if (LINUX_CMSG_FIRSTHDR(msg) != 0) {
     warnk("we do not support ancillary data yet\n");
     return -LINUX_EINVAL;
   }
   hdr.msg_control = NULL;
   hdr.msg_controllen = 0;
-  return syswrap(sendmsg(sockfd, &hdr, flags));
+
+  /*
+    On Mac OS X MSG_NOSIGNAL is not supported, so we need to set SO_NOSIGPIPE
+    option on the socket.
+    See https://lists.apple.com/archives/macnetworkprog/2002/Dec/msg00091.html.
+   */
+  int msg_flags = linux_to_darwin_msg_flags(flags & ~LINUX_MSG_NOSIGNAL);
+  if (msg_flags < 0) {
+    warnk("do_sendmsg: unsupported flags\n");
+    return hdr.msg_flags;
+  }
+  if (flags & LINUX_MSG_NOSIGNAL) {
+    int val = 1;
+    int r = syswrap(setsockopt(sockfd, SOL_SOCKET, SO_NOSIGPIPE,
+			       (void*)&val, sizeof(val)));
+    if (r < 0) {
+      panic("Noah cannot set SO_NOSIGPIPE option.");
+    }
+  }
+
+  return syswrap(sendmsg(sockfd, &hdr, msg_flags));
 }
 
 DEFINE_SYSCALL(sendmsg, int, sockfd, gaddr_t, msg_ptr, int, flags)
@@ -605,10 +636,32 @@ DEFINE_SYSCALL(getpeername, int, sockfd, gaddr_t, addr_ptr, gaddr_t, addrlen_ptr
 DEFINE_SYSCALL(socketpair, int, family, int, type, int, protocol, gaddr_t, usockvec_ptr)
 {
   int fds[2];
-  int r = syswrap(socketpair(linux_to_darwin_sa_family(family), type, protocol, fds));
-  if (r < 0)
-    return r;
-  if (copy_to_user(usockvec_ptr, fds, sizeof fds))
-    return -LINUX_EFAULT;
-  return r;
+  pthread_rwlock_wrlock(&proc.fileinfo.fdtable_lock);
+  int ret = syswrap(socketpair(linux_to_darwin_sa_family(family), type, protocol, fds));
+  if (ret < 0)
+    goto err;
+  int e = register_fd(fds[0], type & LINUX_SOCK_CLOEXEC);
+  if (e < 0) {
+    close(fds[0]);
+    close(fds[1]);
+    ret = e;
+    goto err;
+  }
+  e = register_fd(fds[1], type & LINUX_SOCK_CLOEXEC);
+  if (e < 0) {
+    user_close(fds[0]);
+    close(fds[1]);
+    ret = e;
+    goto err;
+  }
+  if (copy_to_user(usockvec_ptr, fds, sizeof fds)) {
+    user_close(fds[0]);
+    user_close(fds[1]);
+    ret = -LINUX_EFAULT;
+    goto err;
+  }
+
+err:
+  pthread_rwlock_unlock(&proc.fileinfo.fdtable_lock);
+  return ret;
 }

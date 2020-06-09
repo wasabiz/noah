@@ -54,7 +54,7 @@ if ($> != 0) {
 
 my $init = "/bin/bash -i";
 if (@ARGV != 0) {
-  $init = "@ARGV";
+  $init = join(" ", map {"'$_'"} @ARGV);
 }
 
 my $opts = "";
